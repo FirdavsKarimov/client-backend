@@ -4,10 +4,15 @@ import Transaction from '../models/Transaction.js';
 import axios from 'axios';
 import crypto from 'crypto';
 
-// Generate Cryptomus payment signature
-const generateCryptomusSignature = (data) => {
-  const signString = `${JSON.stringify(data)}${process.env.CRYPTOMUS_API_KEY}`;
-  return crypto.createHash('md5').update(signString).digest('hex');
+// Cryptomus имзосини яратиш
+const generateCryptomusSignature = (data, apiKey) => {
+  // JSON.stringify билан объектни строкага айлантириш
+  const jsonString = JSON.stringify(data);
+  // API калитини қўшиш
+  const signString = `${jsonString}${apiKey}`;
+  // md5 хэшини яратиш
+  const hash = crypto.createHash('md5').update(signString).digest('hex');
+  return hash;
 };
 
 // @desc    Get user balance
@@ -33,24 +38,35 @@ export const createTopup = asyncHandler(async (req, res) => {
     throw new Error('User not found');
   }
 
-  if (amount < 5) {
+  if (!amount || amount < 5) {
     res.status(400);
     throw new Error('Minimum topup amount is $5');
   }
 
+  // .env файлдан маълумотларни текшириш
+  const merchantId = process.env.CRYPTOMUS_MERCHANT_ID;
+  const apiKey = process.env.CRYPTOMUS_API_KEY;
+  if (!merchantId || !apiKey) {
+    res.status(500);
+    throw new Error('Server configuration error: Missing Cryptomus credentials');
+  }
+
   const paymentData = {
-    amount: amount.toString(),
+    amount: amount.toString(), // Cryptomus строка кутади
     currency: 'USD',
     order_id: `topup_${Date.now()}_${user._id}`,
     url_callback: `${process.env.BASE_URL}/api/v1/balance/webhook`,
-    merchant: process.env.CRYPTOMUS_MERCHANT_ID,
+    url_return: `${process.env.FRONTEND_URL}/balance`,
+    merchant: merchantId,
   };
 
+  // Дебаг учун маълумотларни чиқариш
   console.log('Payment Data:', paymentData);
-  console.log('Merchant ID:', process.env.CRYPTOMUS_MERCHANT_ID);
-  console.log('API Key:', process.env.CRYPTOMUS_API_KEY);
+  console.log('Merchant ID:', merchantId);
+  console.log('API Key:', apiKey);
 
-  const signature = generateCryptomusSignature(paymentData);
+  // Имзо яратиш
+  const signature = generateCryptomusSignature(paymentData, apiKey);
   console.log('Generated Signature:', signature);
 
   try {
@@ -61,7 +77,7 @@ export const createTopup = asyncHandler(async (req, res) => {
         headers: {
           'Content-Type': 'application/json',
           'Sign': signature,
-          'Merchant': process.env.CRYPTOMUS_MERCHANT_ID,
+          'Merchant': merchantId,
         },
       }
     );
@@ -80,9 +96,15 @@ export const createTopup = asyncHandler(async (req, res) => {
       transactionId: transaction._id,
     });
   } catch (error) {
-    console.error('Axios Error:', error.response?.data || error.message);
+    console.error('Axios Error Details:', {
+      status: error.response?.status,
+      data: error.response?.data,
+      message: error.message,
+    });
     res.status(error.response?.status || 500);
-    throw new Error('Failed to create topup request');
+    throw new Error(
+      error.response?.data?.message || 'Failed to create topup request'
+    );
   }
 });
 
@@ -107,7 +129,7 @@ export const handleWebhook = asyncHandler(async (req, res) => {
   const signature = req.headers['sign'];
   const payload = req.body;
 
-  const generatedSignature = generateCryptomusSignature(payload);
+  const generatedSignature = generateCryptomusSignature(payload, process.env.CRYPTOMUS_API_KEY);
   if (generatedSignature !== signature) {
     res.status(403);
     throw new Error('Invalid signature');

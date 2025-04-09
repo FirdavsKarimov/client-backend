@@ -3,7 +3,7 @@ import Cart from '../models/Cart.js';
 import Service from '../models/Service.js';
 import User from '../models/User.js';
 import Transaction from '../models/Transaction.js';
-import axios from 'axios';
+import providers from '../config/providers.js';
 
 // @desc    Add item to cart
 // @route   POST /api/v1/cart
@@ -93,21 +93,14 @@ export const checkoutCart = asyncHandler(async (req, res) => {
   const transactions = [];
   for (const item of cart.items) {
     const service = item.service;
-    let providerResponse;
-
-    if (service.provider === '711') {
-      const { data } = await axios.get(`https://api.711.so/order/buy`, {
-        params: {
-          apiKey: process.env.PROVIDER_711_API_KEY,
-          country: service.providerData.country,
-          package: service.providerData.packageType,
-        },
-      });
-      providerResponse = data;
-    } else {
+    const provider = providers[service.provider];
+    if (!provider || !provider.buy) {
       res.status(400);
-      throw new Error('Provider not supported');
+      throw new Error(`Provider ${service.provider} not supported`);
     }
+
+    const apiKey = process.env[`${service.provider.toUpperCase()}_API_KEY`];
+    const providerResponse = await provider.buy(service, apiKey);
 
     user.balance -= service.price * item.quantity;
     const tx = await Transaction.create({

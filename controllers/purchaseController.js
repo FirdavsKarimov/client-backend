@@ -2,7 +2,7 @@ import asyncHandler from 'express-async-handler';
 import User from '../models/User.js';
 import Transaction from '../models/Transaction.js';
 import Service from '../models/Service.js';
-import axios from 'axios';
+import providers from '../config/providers.js';
 
 // @desc    Get all purchases of current user
 // @route   GET /api/v1/purchases
@@ -33,20 +33,14 @@ import axios from 'axios';
     throw new Error('Insufficient balance');
   }
 
-  let providerResponse;
-  if (service.provider === '711') {
-    const { data } = await axios.get(`https://api.711.so/order/buy`, {
-      params: {
-        apiKey: process.env.PROVIDER_711_API_KEY,
-        country: service.providerData.country,
-        package: service.providerData.packageType,
-      },
-    });
-    providerResponse = data;
-  } else {
+  const provider = providers[service.provider];
+  if (!provider || !provider.buy) {
     res.status(400);
     throw new Error('Provider not supported');
   }
+
+  const apiKey = process.env[`${service.provider.toUpperCase()}_API_KEY`];
+  const providerResponse = await provider.buy(service, apiKey);
 
   user.balance -= service.price;
   await user.save();
@@ -92,7 +86,7 @@ import axios from 'axios';
   });
 });
 
-// @desc    Extend a 711 purchase
+// @desc    Extend a purchase
 // @route   POST /api/v1/purchases/extend/:id
 // @access  Private
  const extendPurchase = asyncHandler(async (req, res) => {
@@ -103,9 +97,15 @@ import axios from 'axios';
     status: 'completed',
   });
 
-  if (!tx || tx.serviceDetails.provider !== '711') {
+  if (!tx) {
     res.status(404);
-    throw new Error('Purchase not found or extension not supported');
+    throw new Error('Purchase not found');
+  }
+
+  const provider = providers[tx.serviceDetails.provider];
+  if (!provider || !provider.extend) {
+    res.status(404);
+    throw new Error('Extension not supported for this provider');
   }
 
   const service = await Service.findById(tx.serviceDetails.serviceId);
@@ -116,12 +116,8 @@ import axios from 'axios';
     throw new Error('Insufficient balance');
   }
 
-  const { data } = await axios.get(`https://api.711.so/order/extend`, {
-    params: {
-      apiKey: process.env.PROVIDER_711_API_KEY,
-      order: tx.serviceDetails.providerResponse.orderId,
-    },
-  });
+  const apiKey = process.env[`${tx.serviceDetails.provider.toUpperCase()}_API_KEY`];
+  const providerResponse = await provider.extend(tx.serviceDetails.providerResponse.order_id || tx.serviceDetails.providerResponse.orderId, apiKey);
 
   req.user.balance -= extensionPrice;
   await req.user.save();
@@ -132,9 +128,9 @@ import axios from 'axios';
     type: 'extension',
     status: 'completed',
     serviceDetails: {
-      provider: '711',
+      provider: tx.serviceDetails.provider,
       originalTx: tx._id,
-      providerResponse: data,
+      providerResponse,
     },
   });
 
@@ -145,7 +141,7 @@ import axios from 'axios';
   });
 });
 
-// @desc    Get traffic for a 711 purchase
+// @desc    Get traffic for a purchase
 // @route   GET /api/v1/purchases/traffic/:id
 // @access  Private
  const getPurchaseTraffic = asyncHandler(async (req, res) => {
@@ -155,21 +151,23 @@ import axios from 'axios';
     type: 'purchase',
   });
 
-  if (!tx || tx.serviceDetails.provider !== '711') {
+  if (!tx) {
     res.status(404);
-    throw new Error('Purchase not found or traffic check not supported');
+    throw new Error('Purchase not found');
   }
 
-  const { data } = await axios.get(`https://api.711.so/order/traffic`, {
-    params: {
-      apiKey: process.env.PROVIDER_711_API_KEY,
-      order: tx.serviceDetails.providerResponse.orderId,
-    },
-  });
+  const provider = providers[tx.serviceDetails.provider];
+  if (!provider || !provider.traffic) {
+    res.status(404);
+    throw new Error('Traffic check not supported for this provider');
+  }
+
+  const apiKey = process.env[`${tx.serviceDetails.provider.toUpperCase()}_API_KEY`];
+  const providerResponse = await provider.traffic(tx.serviceDetails.providerResponse.order_id || tx.serviceDetails.providerResponse.orderId, apiKey);
 
   res.json({
     success: true,
-    traffic: data.trafficRemaining,
+    traffic: providerResponse.traffic || providerResponse.trafficRemaining || 'N/A',
   });
 });
 
